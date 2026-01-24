@@ -1,4 +1,4 @@
- import os, yt_dlp, asyncio, uuid
+import os, yt_dlp, asyncio, uuid
 from flask import Flask
 from threading import Thread
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -12,6 +12,7 @@ def home():
     return "🔥 F4X Empire is Online 24/7!"
 
 def run_web():
+    # Render ke liye port 8080 default hai
     app_web.run(host='0.0.0.0', port=8080)
 
 def keep_alive():
@@ -32,6 +33,7 @@ def download_engine(url, mode, f_id=None):
     if mode == 'mp3':
         opts.update({'format': 'bestaudio/best', 'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'm4a'}]})
     else:
+        # High quality merging with FFmpeg
         opts['format'] = f"{f_id}+bestaudio/best" if f_id else 'bestvideo+bestaudio/best'
     
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -39,11 +41,11 @@ def download_engine(url, mode, f_id=None):
         return ydl.prepare_filename(info)
 
 async def start(u, c):
-    await u.message.reply_text(f"🚀 **F4X Ultra System (with Flask) Ready!**\nNaeem bhai, link bhejien.\n\n{OWNER_TAG}")
+    await u.message.reply_text(f"🚀 **F4X Ultra System Active!**\nNaeem bhai, link bhejien (4K Support).\n\n{OWNER_TAG}")
 
 async def handle_msg(u, c):
     q = u.message.text
-    if "playlist" in q: return await u.message.reply_text("❌ Single video link bhejien.")
+    if "youtu" not in q: return
     st = await u.message.reply_text("🔍 Analyzing Quality...")
     try:
         with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
@@ -53,8 +55,8 @@ async def handle_msg(u, c):
         btns = [[InlineKeyboardButton("🎵 Audio", callback_data=f"mp3|audio|{v_url}")],
                 [InlineKeyboardButton("🎥 1080p", callback_data=f"mp4|137|{v_url}"),
                  InlineKeyboardButton("🎥 4K Ultra", callback_data=f"mp4|401|{v_url}")]]
-        await st.edit_text(f"🎬 {info['title'][:40]}\nSelect Quality:", reply_markup=InlineKeyboardMarkup(btns))
-    except: await st.edit_text("❌ Error: Detail nahi mili.")
+        await st.edit_text(f"🎬 {info['title'][:40]}\nQuality select karein:", reply_markup=InlineKeyboardMarkup(btns))
+    except: await st.edit_text("❌ Error: Information nahi mili.")
 
 async def btn_click(u, c):
     query = u.callback_query; await query.answer()
@@ -66,13 +68,12 @@ async def btn_click(u, c):
         with open(path, 'rb') as f:
             if m == 'mp3': await query.message.reply_audio(audio=f, caption=OWNER_TAG)
             else: await query.message.reply_video(video=f, caption=OWNER_TAG, supports_streaming=True)
-        os.remove(path); await st.delete()
-    except Exception as e: await st.edit_text(f"⚠️ Error: Download fail ho gaya.")
+        if os.path.exists(path): os.remove(path)
+        await st.delete()
+    except: await st.edit_text(f"⚠️ Error: Download fail ho gaya.")
 
 if __name__ == '__main__':
-    keep_alive() # Flask server chalu karega
+    keep_alive()
     app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
-    app.add_handler(CallbackQueryHandler(btn_click))
-    app.run_polling()
+    app.add_handler(CommandHandler("start", start)); app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
+    app.add_handler(CallbackQueryHandler(btn_click)); app.run_polling()
