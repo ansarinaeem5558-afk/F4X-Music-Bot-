@@ -1,0 +1,17 @@
+# Pehle Python 3.10 ka base image lenge
+FROM python:3.10-slim
+
+# FFmpeg install karenge (ye engine hai high quality ke liye)
+RUN apt-get update && apt-get install -y ffmpeg && apt-get clean
+
+# Working directory set karenge
+WORKDIR /app
+
+# Sabhi files ko copy karenge
+COPY . .
+
+# Requirements install karenge
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Bot start karne ki command
+CMD ["python", "main.py"]
