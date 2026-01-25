@@ -12,7 +12,7 @@ def home(): return "🔥 F4X 4K Ultra is Online!"
 def run_web(): web_app.run(host='0.0.0.0', port=8080)
 def keep_alive(): Thread(target=run_web).start()
 
-# --- 🤖 BOT LOGIC ---
+# --- 🤖 BOT CONFIGURATION ---
 BOT_TOKEN = os.getenv("BOT_TOKEN") or "8421035286:AAHAXb-OI-kqiQnM7UL42o1JervTtQFT9fg"
 OWNER_TAG = "👑 Owner: Naeem (F4X Empire)"
 
@@ -27,7 +27,7 @@ def download_engine(url, mode, f_id=None):
     if mode == 'mp3':
         opts.update({'format': 'bestaudio/best', 'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'm4a'}]})
     else:
-        # FFmpeg required for this part
+        # Docker/FFmpeg high quality merging ke liye
         opts['format'] = f"{f_id}+bestaudio/best" if f_id else 'bestvideo+bestaudio/best'
     
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -50,7 +50,7 @@ async def handle_msg(u, c):
                 [InlineKeyboardButton("🎥 1080p Full HD", callback_data=f"mp4|137|{v_url}"),
                  InlineKeyboardButton("🎥 4K Ultra HD", callback_data=f"mp4|401|{v_url}")]]
         await st.edit_text(f"🎬 {info['title'][:40]}\nQuality select karein:", reply_markup=InlineKeyboardMarkup(btns))
-    except: await st.edit_text("❌ YouTube ne block kiya. Cookies update karein.")
+    except: await st.edit_text("❌ Information nahi mili. Cookies check karein.")
 
 async def btn_click(u, c):
     query = u.callback_query; await query.answer()
@@ -62,7 +62,7 @@ async def btn_click(u, c):
             if m == 'mp3': await query.message.reply_audio(audio=f, caption=OWNER_TAG)
             else: await query.message.reply_video(video=f, caption=OWNER_TAG, supports_streaming=True)
         os.remove(path); await st.delete()
-    except: await st.edit_text("⚠️ Processing failed. Check Docker/FFmpeg.")
+    except: await st.edit_text("⚠️ Processing failed. Docker file check karein.")
 
 if __name__ == '__main__':
     keep_alive()
