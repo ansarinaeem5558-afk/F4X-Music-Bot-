@@ -1,71 +1,146 @@
-import os, yt_dlp, asyncio, uuid
+import os
+import logging
+import asyncio
+import shutil
+import threading
 from flask import Flask
-from threading import Thread
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+import yt_dlp
 
-# --- 🌐 KEEP ALIVE (Flask) ---
-web_app = Flask('')
-@web_app.route('/')
-def home(): return "🔥 F4X 4K Ultra is Online!"
+# ==========================================
+# 👇 APNA TOKEN YAHAN DAALO
+# ==========================================
+TOKEN = "8421035286:AAHwFnb08kgffbTFT3WAV4asG4Zbr2X5meA" 
 
-def run_web(): web_app.run(host='0.0.0.0', port=8080)
-def keep_alive(): Thread(target=run_web).start()
+# ==========================================
+# 👇 FLASK WEB SERVER (Render ke liye)
+# ==========================================
+app = Flask(__name__)
 
-# --- 🤖 BOT CONFIGURATION ---
-BOT_TOKEN = os.getenv("BOT_TOKEN") or "8421035286:AAHAXb-OI-kqiQnM7UL42o1JervTtQFT9fg"
-OWNER_TAG = "👑 Owner: Naeem (F4X Empire)"
+@app.route('/')
+def home():
+    return "Bot is Running! (Ye Page Render ko Zinda rakhega)"
 
-def download_engine(url, mode, f_id=None):
-    uid = str(uuid.uuid4())[:8]
-    tmpl = f"f4x_{uid}.%(ext)s"
-    opts = {
-        'outtmpl': tmpl, 'noplaylist': True, 'quiet': True,
-        'cookiefile': 'cookies.txt', # 🛡️ Anti-Block Shield
-        'extractor_args': {'youtube': {'player_client': ['android', 'web_embedded']}},
-    }
-    if mode == 'mp3':
-        opts.update({'format': 'bestaudio/best', 'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'm4a'}]})
-    else:
-        # Docker/FFmpeg high quality merging ke liye
-        opts['format'] = f"{f_id}+bestaudio/best" if f_id else 'bestvideo+bestaudio/best'
+def run_flask():
+    # Render khud PORT deta hai, agar nahi mila to 8080 use karega
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# ==========================================
+# 👇 BOT LOGIC
+# ==========================================
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 Link bhejo!")
+
+async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text
+    if "http" not in url:
+        await update.message.reply_text("❌ Link sahi nahi hai.")
+        return
+
+    context.user_data['url'] = url
+    keyboard = [
+        [InlineKeyboardButton("🎵 MP3 (Audio)", callback_data='type_audio')],
+        [InlineKeyboardButton("🎬 Video", callback_data='type_video')]
+    ]
+    await update.message.reply_text("Format choose karo:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    url = context.user_data.get('url')
+
+    if not url:
+        await query.edit_message_text("❌ Link expire ho gaya.")
+        return
+
+    if data == 'type_audio':
+        keyboard = [[InlineKeyboardButton("Confirm Download", callback_data='aud_best')]]
+        await query.edit_message_text("🎵 Audio Download karein?", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif data == 'type_video':
+        keyboard = [
+            [InlineKeyboardButton("360p", callback_data='vid_360'), InlineKeyboardButton("720p", callback_data='vid_720')],
+            [InlineKeyboardButton("1080p", callback_data='vid_1080')]
+        ]
+        await query.edit_message_text("🎬 Quality select karo:", reply_markup=InlineKeyboardMarkup(keyboard))
     
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        return ydl.prepare_filename(info)
+    elif data.startswith('aud_') or data.startswith('vid_'):
+        await query.edit_message_text("⏳ Download shuru ho raha hai... Wait karo.")
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: run_download_task(url, data, update, context))
 
-async def start(u, c):
-    await u.message.reply_text(f"🚀 **F4X 4K System Fixed!**\nNaeem bhai, link bhejien.\n\n{OWNER_TAG}")
+def run_download_task(url, choice, update, context):
+    asyncio.run(execute_download(url, choice, update, context))
 
-async def handle_msg(u, c):
-    q = u.message.text
-    if "youtu" not in q: return
-    st = await u.message.reply_text("🛰️ Bypassing YouTube Firewall...")
+async def execute_download(url, choice, update, context):
+    chat_id = update.effective_chat.id
+    
+    if not shutil.which('ffmpeg'):
+        await context.bot.send_message(chat_id, "⚠️ Server Error: FFmpeg missing on Server.")
+        return
+
+    ydl_opts = {
+        'outtmpl': '%(title)s.%(ext)s',
+        'quiet': True,
+        'no_warnings': True,
+        'geo_bypass': True,
+        'nocheckcertificate': True,
+        'extractor_args': {'youtube': {'player_client': ['ios']}},
+    }
+
+    if 'aud_' in choice:
+        ydl_opts.update({
+            'format': 'bestaudio/best',
+            'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '192'}],
+        })
+    elif 'vid_' in choice:
+        height = choice.split('_')[1]
+        ydl_opts['format'] = f'bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={height}][ext=mp4]/best'
+        ydl_opts['merge_output_format'] = 'mp4'
+
+    filename = None
     try:
-        with yt_dlp.YoutubeDL({'quiet': True, 'cookiefile': 'cookies.txt'}) as ydl:
-            info = ydl.extract_info(q if q.startswith("http") else f"ytsearch1:{q}", download=False)
-            if 'entries' in info: info = info['entries'][0]
-        v_url = info['webpage_url']
-        btns = [[InlineKeyboardButton("🎵 Audio", callback_data=f"mp3|audio|{v_url}")],
-                [InlineKeyboardButton("🎥 1080p Full HD", callback_data=f"mp4|137|{v_url}"),
-                 InlineKeyboardButton("🎥 4K Ultra HD", callback_data=f"mp4|401|{v_url}")]]
-        await st.edit_text(f"🎬 {info['title'][:40]}\nQuality select karein:", reply_markup=InlineKeyboardMarkup(btns))
-    except: await st.edit_text("❌ Information nahi mili. Cookies check karein.")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if 'requested_downloads' in info:
+                filename = info['requested_downloads'][0]['filepath']
+            else:
+                filename = ydl.prepare_filename(info)
+                if 'aud_' in choice: filename = filename.rsplit('.', 1)[0] + '.mp3'
 
-async def btn_click(u, c):
-    query = u.callback_query; await query.answer()
-    m, f_id, url = query.data.split("|")
-    st = await query.message.reply_text("⏳ Processing 4K Chunks (Merging)...")
-    try:
-        path = await asyncio.get_event_loop().run_in_executor(None, download_engine, url, m, f_id)
-        with open(path, 'rb') as f:
-            if m == 'mp3': await query.message.reply_audio(audio=f, caption=OWNER_TAG)
-            else: await query.message.reply_video(video=f, caption=OWNER_TAG, supports_streaming=True)
-        os.remove(path); await st.delete()
-    except: await st.edit_text("⚠️ Processing failed. Docker file check karein.")
+        if filename and os.path.exists(filename):
+            if os.path.getsize(filename) > 49 * 1024 * 1024:
+                await context.bot.send_message(chat_id, "❌ File 50MB se badi hai (Telegram Limit).")
+            else:
+                await context.bot.send_message(chat_id, "✅ Uploading...")
+                with open(filename, 'rb') as f:
+                    if 'aud_' in choice:
+                        await context.bot.send_audio(chat_id, audio=f, title=info.get('title', 'Audio'))
+                    else:
+                        await context.bot.send_video(chat_id, video=f, caption=info.get('title', 'Video'))
+            os.remove(filename)
+        else:
+            await context.bot.send_message(chat_id, "❌ File download fail ho gayi.")
+
+    except Exception as e:
+        await context.bot.send_message(chat_id, f"❌ Error: {str(e)}")
+        if filename and os.path.exists(filename): os.remove(filename)
 
 if __name__ == '__main__':
-    keep_alive()
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start)); app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
-    app.add_handler(CallbackQueryHandler(btn_click)); app.run_polling()
+    # --- YAHAN HAI FLASK KA MAGIC ---
+    # Threading use karke Flask ko alag chalayenge taaki Bot na ruke
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.start()
+
+    # Bot Start
+    application = ApplicationBuilder().token(TOKEN).build()
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_link))
+    application.add_handler(CallbackQueryHandler(button_click))
+    
+    print("Bot is Live on Render/Pydroid...")
+    application.run_polling()
