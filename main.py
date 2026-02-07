@@ -1,146 +1,207 @@
 import os
-import logging
 import asyncio
-import shutil
+import time
 import threading
-from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+import requests
 import yt_dlp
+from flask import Flask
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ==========================================
-# 👇 APNA TOKEN YAHAN DAALO
-# ==========================================
-TOKEN = "8421035286:AAHwFnb08kgffbTFT3WAV4asG4Zbr2X5meA" 
+# --- ⚙️ CONFIGURATION (Render Environment Variables) ---
+API_ID = int(os.environ.get("API_ID", "37314366"))
+API_HASH = os.environ.get("API_HASH", "bd4c934697e7e91942ac911a5a287b46")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8421035286:AAHNFAIgzmBESZTkk7ErPz1-DH2FkWRUSWs")
 
-# ==========================================
-# 👇 FLASK WEB SERVER (Render ke liye)
-# ==========================================
-app = Flask(__name__)
+# --- 🌐 FLASK SERVER (Render ko zinda rakhne ke liye) ---
+app_web = Flask(__name__)
 
-@app.route('/')
+@app_web.route('/')
 def home():
-    return "Bot is Running! (Ye Page Render ko Zinda rakhega)"
+    return "✅ Bot is Online and Running!", 200
 
 def run_flask():
-    # Render khud PORT deta hai, agar nahi mila to 8080 use karega
     port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    app_web.run(host="0.0.0.0", port=port)
 
-# ==========================================
-# 👇 BOT LOGIC
-# ==========================================
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# --- 🤖 BOT CLIENT ---
+app = Client("RenderApiBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Link bhejo!")
+# --- 🔗 STRICT API LIST ---
+MP3_API = "https://ytmp3.alphaapi.workers.dev/?url={}"
+MP4_API = "https://ytmp4hd1080p.anshapi.workers.dev/down?url={}&format=1&quality=1080"
 
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text
-    if "http" not in url:
-        await update.message.reply_text("❌ Link sahi nahi hai.")
-        return
+# --- 🛠️ IMPORTANT: Browser Headers (Playback Fix) ---
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
 
-    context.user_data['url'] = url
-    keyboard = [
-        [InlineKeyboardButton("🎵 MP3 (Audio)", callback_data='type_audio')],
-        [InlineKeyboardButton("🎬 Video", callback_data='type_video')]
-    ]
-    await update.message.reply_text("Format choose karo:", reply_markup=InlineKeyboardMarkup(keyboard))
+# --- 🔍 HELPER ---
+def get_yt_link(query):
+    if "youtube.com" in query or "youtu.be" in query: return query
+    ydl_opts = {'format': 'best', 'noplaylist': True, 'quiet': True, 'default_search': 'ytsearch1'}
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(query, download=False)
+            return info['entries'][0]['webpage_url'] if 'entries' in info else None
+        except: return None
 
-async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    url = context.user_data.get('url')
-
-    if not url:
-        await query.edit_message_text("❌ Link expire ho gaya.")
-        return
-
-    if data == 'type_audio':
-        keyboard = [[InlineKeyboardButton("Confirm Download", callback_data='aud_best')]]
-        await query.edit_message_text("🎵 Audio Download karein?", reply_markup=InlineKeyboardMarkup(keyboard))
-    elif data == 'type_video':
-        keyboard = [
-            [InlineKeyboardButton("360p", callback_data='vid_360'), InlineKeyboardButton("720p", callback_data='vid_720')],
-            [InlineKeyboardButton("1080p", callback_data='vid_1080')]
-        ]
-        await query.edit_message_text("🎬 Quality select karo:", reply_markup=InlineKeyboardMarkup(keyboard))
+# --- 📥 API DOWNLOADER ---
+def download_from_api(url, mode):
+    filename = f"song_{int(time.time())}"
+    final_path = f"{filename}.{'mp3' if mode == 'mp3' else 'mp4'}"
     
-    elif data.startswith('aud_') or data.startswith('vid_'):
-        await query.edit_message_text("⏳ Download shuru ho raha hai... Wait karo.")
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: run_download_task(url, data, update, context))
-
-def run_download_task(url, choice, update, context):
-    asyncio.run(execute_download(url, choice, update, context))
-
-async def execute_download(url, choice, update, context):
-    chat_id = update.effective_chat.id
+    target_api = MP3_API if mode == 'mp3' else MP4_API
+    formatted_url = target_api.format(url)
     
-    if not shutil.which('ffmpeg'):
-        await context.bot.send_message(chat_id, "⚠️ Server Error: FFmpeg missing on Server.")
-        return
-
-    ydl_opts = {
-        'outtmpl': '%(title)s.%(ext)s',
-        'quiet': True,
-        'no_warnings': True,
-        'geo_bypass': True,
-        'nocheckcertificate': True,
-        'extractor_args': {'youtube': {'player_client': ['ios']}},
-    }
-
-    if 'aud_' in choice:
-        ydl_opts.update({
-            'format': 'bestaudio/best',
-            'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '192'}],
-        })
-    elif 'vid_' in choice:
-        height = choice.split('_')[1]
-        ydl_opts['format'] = f'bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={height}][ext=mp4]/best'
-        ydl_opts['merge_output_format'] = 'mp4'
-
-    filename = None
+    print(f"🔄 Connecting to API for {mode}...")
+    
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if 'requested_downloads' in info:
-                filename = info['requested_downloads'][0]['filepath']
-            else:
-                filename = ydl.prepare_filename(info)
-                if 'aud_' in choice: filename = filename.rsplit('.', 1)[0] + '.mp3'
+        # 1. API Response
+        resp = requests.get(formatted_url, headers=HEADERS, timeout=15).json()
+        
+        # 2. Link Extraction Logic
+        dl_link = None
+        def extract(d):
+            if isinstance(d, dict):
+                for k, v in d.items():
+                    if isinstance(v, str) and v.startswith("http"): return v
+                    if isinstance(v, (dict, list)): 
+                        res = extract(v)
+                        if res: return res
+            elif isinstance(d, list):
+                for i in d:
+                    res = extract(i)
+                    if res: return res
+            return None
 
-        if filename and os.path.exists(filename):
-            if os.path.getsize(filename) > 49 * 1024 * 1024:
-                await context.bot.send_message(chat_id, "❌ File 50MB se badi hai (Telegram Limit).")
+        if 'url' in resp: dl_link = resp['url']
+        elif 'download' in resp: dl_link = resp['download']
+        elif 'link' in resp: dl_link = resp['link']
+        
+        if not dl_link: dl_link = extract(resp)
+        
+        if dl_link:
+            print(f"✅ Link Found: {dl_link}")
+            
+            # 3. Download Content (With Headers to fix Playback)
+            with requests.get(dl_link, headers=HEADERS, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                with open(final_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            
+            # 4. Size Validation
+            if os.path.getsize(final_path) > 50000: # 50KB check
+                return final_path
             else:
-                await context.bot.send_message(chat_id, "✅ Uploading...")
-                with open(filename, 'rb') as f:
-                    if 'aud_' in choice:
-                        await context.bot.send_audio(chat_id, audio=f, title=info.get('title', 'Audio'))
-                    else:
-                        await context.bot.send_video(chat_id, video=f, caption=info.get('title', 'Video'))
-            os.remove(filename)
-        else:
-            await context.bot.send_message(chat_id, "❌ File download fail ho gayi.")
-
+                os.remove(final_path)
+                return None
+        return None
     except Exception as e:
-        await context.bot.send_message(chat_id, f"❌ Error: {str(e)}")
-        if filename and os.path.exists(filename): os.remove(filename)
+        print(f"❌ Error: {e}")
+        return None
 
-if __name__ == '__main__':
-    # --- YAHAN HAI FLASK KA MAGIC ---
-    # Threading use karke Flask ko alag chalayenge taaki Bot na ruke
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.start()
-
-    # Bot Start
-    application = ApplicationBuilder().token(TOKEN).build()
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_link))
-    application.add_handler(CallbackQueryHandler(button_click))
+# --- 💬 START ---
+@app.on_message(filters.command("start"))
+async def start(client, message):
+    txt = (
+        f"👋 **Hello {message.from_user.first_name}!**\n\n"
+        "🎶 **Music & Video Downloader Bot**\n"
+        "ℹ️ **Render Support:** Yes (24/7)\n"
+        "🚀 **Speed:** High Speed API\n\n"
+        "👇 **Song ka naam ya Link bhejo:**"
+    )
+    # Mast Photo (Badal sakte ho)
+    IMG = "https://graph.org/file/460960527351658428178.jpg"
     
-    print("Bot is Live on Render/Pydroid...")
-    application.run_polling()
+    await message.reply_photo(IMG, caption=txt)
+
+# --- 🔎 PROCESS ---
+@app.on_message(filters.text)
+async def handle_msg(client, message):
+    if message.text.startswith("/"): return
+    
+    msg = await message.reply_text("🔎 **Searching...**")
+    url = await asyncio.get_event_loop().run_in_executor(None, get_yt_link, message.text)
+    
+    if not url:
+        await msg.edit("❌ Song nahi mila.")
+        return
+
+    # Metadata Fetch (Sirf Display ke liye)
+    title = "Unknown"
+    thumb = None
+    try:
+        with yt_dlp.YoutubeDL({'quiet':True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'Unknown')
+            thumb = info.get('thumbnail')
+            duration = info.get('duration_string')
+    except: pass
+
+    btn = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎵 MP3 Song", callback_data=f"mp3|{url}")],
+        [InlineKeyboardButton("🎥 HD Video", callback_data=f"mp4|{url}")]
+    ])
+    
+    caption = f"💿 **{title}**\n⏱ **Duration:** {duration}\n\n👇 Format Select Karo:"
+    
+    if thumb: await message.reply_photo(thumb, caption=caption, reply_markup=btn)
+    else: await message.reply_text(caption, reply_markup=btn)
+    await msg.delete()
+
+@app.on_callback_query()
+async def cb(client, query):
+    mode, url = query.data.split("|")
+    status = await query.message.reply_text("⚡ **Connecting to Server...**")
+    
+    try:
+        loop = asyncio.get_event_loop()
+        file_path = await loop.run_in_executor(None, download_from_api, url, mode)
+        
+        if file_path:
+            await status.edit("🚀 **Uploading...**")
+            
+            # Metadata for Player
+            title = "Music"
+            performer = "Render Bot"
+            duration = 0
+            try:
+                with yt_dlp.YoutubeDL({'quiet':True}) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    title = info.get('title', title)
+                    performer = info.get('uploader', performer)
+                    duration = info.get('duration', 0)
+            except: pass
+
+            if mode == 'mp3':
+                await client.send_audio(
+                    chat_id=query.message.chat.id,
+                    audio=file_path,
+                    title=title,
+                    performer=performer,
+                    duration=duration,
+                    caption=f"🎧 **{title}**\n✨ High Quality MP3"
+                )
+            else:
+                await client.send_video(
+                    chat_id=query.message.chat.id,
+                    video=file_path,
+                    duration=duration,
+                    caption=f"🎬 **{title}**\n✨ HD Video"
+                )
+            
+            os.remove(file_path)
+            await status.delete()
+        else:
+            await status.edit("❌ **Error:** API se file load nahi ho payi.")
+            
+    except Exception as e:
+        await status.edit(f"❌ Error: {e}")
+
+if __name__ == "__main__":
+    # Flask Thread Start
+    threading.Thread(target=run_flask).start()
+    print("✅ Bot + Flask Started!")
+    app.run()
